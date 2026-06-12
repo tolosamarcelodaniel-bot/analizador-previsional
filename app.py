@@ -1,147 +1,80 @@
 import streamlit as st
 import pandas as pd
-import openpyxl
-from openpyxl.styles import PatternFill
+import re
+from pypdf import PdfReader
 
-# Configuración de la página web
-st.set_page_config(page_title="Analizador Previsional Inteligente", layout="wide")
+st.set_page_config(page_title="Analizador Previsional PDF", layout="wide")
 
-st.title("🛠️ Herramienta de Análisis y Consolidación Previsional")
-st.markdown("Cargue su archivo de historias laborales con filas múltiples para clasificar y evaluar el mejor cargo.")
+st.title("🛠️ Herramienta de Análisis Previsional (Lectura de PDFs)")
+st.markdown("Cargue su archivo PDF de historia laboral para extraer texto, mapear campos y calcular las reglas del mejor cargo.")
 
-# -----------------------------------------------------------------
-# 1. MÓDULO DE CARGA DE ARCHIVOS
-# -----------------------------------------------------------------
-archivo_subido = st.file_uploader("📂 Arrastre o seleccione el archivo Excel de origen (.xlsx)", type=["xlsx"])
+# 1. CARGA DE ARCHIVO (Ahora acepta PDF)
+archivo_subido = st.file_uploader("📂 Arrastre o seleccione el archivo PDF de origen (.pdf)", type=["pdf"])
 
 if archivo_subido is not None:
-    # Cargar datos normalmente con pandas para la estructura
-    df_original = pd.read_excel(archivo_subido)
-    st.success("✅ Archivo cargado correctamente en la memoria temporal.")
+    st.success("✅ PDF cargado correctamente.")
     
-    # -----------------------------------------------------------------
-    # 2. ASISTENTE DE MAPEO DE CAMPOS (Interfaz de Usuario)
-    # -----------------------------------------------------------------
-    st.subheader("📋 Asistente de Mapeo de Columnas")
-    st.info("Asocie las columnas de su archivo con los campos lógicos que requiere el motor.")
+    # Extraer texto del PDF
+    with st.spinner("Leyendo y extrayendo texto del PDF..."):
+        lector_pdf = PdfReader(archivo_subido)
+        texto_completo = ""
+        for pagina in lector_pdf.pages:
+            texto_completo += pagina.extract_text() + "\n"
+            
+    st.subheader("📋 Vista Previa del Texto Extraído")
+    st.text_area("Texto detectado en el documento (primeros 2000 caracteres):", texto_completo[:2000], height=200)
+
+    st.markdown("---")
+    st.subheader("🎛️ Configuración del Análisis Previsional")
     
-    columnas_archivo = list(df_original.columns)
-    
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     with col1:
-        col_cuil = st.selectbox("Clave de Identificación (CUIL/Documento)", opciones=columnas_archivo, index=0)
-        col_nombre = st.selectbox("Apellido y Nombre", opciones=columnas_archivo, index=1)
+        cuil_usuario = st.text_input("Introduzca el CUIL/Documento a buscar en el PDF:", value="20-34567890-9")
+        cargo_buscar = st.text_input("Escriba el nombre exacto del Cargo de Mayor Jerarquía:", value="Director")
     with col2:
-        col_cargo = st.selectbox("Cargo de Mayor Jerarquía (Columna con celdas verdes)", opciones=columnas_archivo, index=8)
-        col_meses = st.selectbox("Meses en el Cargo", opciones=columnas_archivo, index=9)
-    with col3:
-        col_anos_totales = st.selectbox("Años de Servicio Totales", opciones=columnas_archivo, index=4)
-        col_meses_totales = st.selectbox("Meses de Servicio Totales", opciones=columnas_archivo, index=5)
+        meses_manuales = st.number_input("Meses acumulados encontrados para este cargo:", min_value=0, value=36, step=1)
 
-    # Botón para activar el motor lógico
-    if st.button("🚀 Procesar y Categorizar Datos"):
+    # 2. MOTOR LÓGICO DE REGLAS PREVISIONALES
+    if st.button("🚀 Calcular Viabilidad de Mejor Cargo"):
+        st.subheader("📊 Resultado del Análisis Condicional")
         
-        # -----------------------------------------------------------------
-        # 3. MOTOR LÓGICO: DETECCIÓN DE COLOR VERDE Y REGLAS (36/60 meses)
-        # -----------------------------------------------------------------
-        with st.spinner("Analizando celdas destacadas y consistencia de tiempos..."):
+        # Buscar si el cargo existe en el texto extraído
+        existe_cargo = cargo_buscar.lower() in texto_completo.lower()
+        
+        if existe_cargo:
+            st.info(f"🔍 El cargo **'{cargo_buscar}'** fue localizado dentro del documento PDF.")
             
-            # Volver a cargar el archivo usando openpyxl para extraer los colores reales
-            archivo_subido.seek(0)
-            wb = openpyxl.load_workbook(archivo_subido, data_only=True)
-            ws = wb.active
-            
-            # Encontrar el índice numérico de la columna del cargo mapeado
-            idx_cargo_col = columnas_archivo.index(col_cargo) + 1
-            
-            # Lista para almacenar si la celda de esa fila era verde
-            es_celda_verde = []
-            
-            # Recorrer las filas buscando el color verde (omitir cabecera fila 1)
-            for row in range(2, ws.max_row + 1):
-                celda = ws.cell(row=row, column=idx_cargo_col)
-                color_hex = celda.fill.start_color.rgb if celda.fill and celda.fill.fill_type else None
+            # Evaluación de Reglas en Cascada según tu requerimiento
+            if meses_manuales >= 36:
+                st.success(f"🏆 **Regla 1 Cumplida:** El cargo califica como Mejor Cargo por Continuidad (Posee {meses_manuales} meses continuos, mínimo requerido: 36).")
+            elif meses_manuales >= 60:
+                st.warning(f"⚖️ **Regla 2 Cumplida:** El cargo califica como Mejor Cargo por Alternancia (Posee {meses_manuales} meses alternados, mínimo requerido: 60).")
+            else:
+                st.error(f"❌ **No Califica:** El cargo fue hallado pero solo acumula {meses_manuales} meses (No alcanza los 36 continuos ni los 60 alternados).")
                 
-                # Detectar tonos de verde (variaciones comunes en Excel como 'D4EDDA' o verdes estándar)
-                # Si no tiene color o es blanco, se considera falso
-                if color_hex and color_hex != "00000000" and color_hex != "FFFFFFFF":
-                    # Simplificación lógica: si hay color asignado en esa columna, asumimos el destacado
-                    es_celda_verde.append(True)
-                else:
-                    es_celda_verde.append(False)
+            # Crear un reporte limpio para descargar
+            reporte_datos = {
+                "CUIL/Documento": [cuil_usuario],
+                "Cargo Evaluado": [cargo_buscar],
+                "Meses Registrados": [meses_manuales],
+                "Condición Legal": ["Continuidad (Regla 1)" if meses_manuales >= 36 else ("Alternancia (Regla 2)" if meses_manuales >= 60 else "No Califica")]
+            }
+            df_reporte = pd.DataFrame(reporte_datos)
             
-            # Asegurar correspondencia con el DataFrame de Pandas (recortando si difieren filas vacías)
-            df_original = df_original.head(len(es_celda_verde)).copy()
-            df_original['__es_mejor_cargo_verde__'] = es_celda_verde
-
-            # --- CONSOLIDACIÓN POR EMPLEADO (CUIL) ---
-            resultados_consolidados = []
-            
-            for cuil, grupo in df_original.groupby(col_cuil):
-                nombre = grupo[col_nombre].iloc[0]
-                
-                # Filtrar solo los registros donde el cargo estaba en verde
-                grupo_mejor_cargo = grupo[grupo['__es_mejor_cargo_verde__'] == True]
-                
-                mejor_cargo_nombre = "No Identificado / Sin color"
-                condicion_cumplida = "No califica"
-                meses_computados = 0
-                
-                if not grupo_mejor_cargo.empty:
-                    mejor_cargo_nombre = grupo_mejor_cargo[col_cargo].iloc[0]
-                    # Sumamos los meses declarados en esas filas específicas
-                    total_meses_en_verde = grupo_mejor_cargo[col_meses].sum()
-                    
-                    # Evaluación de Reglas en Cascada
-                    # Nota: Para evaluar continuidad perfecta se requerirían las fechas exactas ordenadas,
-                    # aquí lo evaluamos por acumulación directa bajo sus umbrales normativos 36/60:
-                    if total_meses_en_verde >= 36:
-                        # Asumimos continuidad si están agrupados consecutivamente en el bloque verde
-                        condicion_cumplida = "✅ Regla 1 Cumplida: Continuo >= 36 Meses"
-                        meses_computados = total_meses_en_verde
-                    elif total_meses_en_verde >= 60:
-                        condicion_cumplida = "⚠️ Regla 2 Cumplida: Alternado >= 60 Meses"
-                        meses_computados = total_meses_en_verde
-                    else:
-                        condicion_cumplida = f"❌ No alcanza el mínimo previsional (Suma: {total_meses_en_verde} meses)"
-                        meses_computados = total_meses_en_verde
-
-                # Cálculo de antigüedad general del empleado
-                anos_totales = grupo[col_anos_totales].sum()
-                meses_totales = grupo[col_meses_totales].sum()
-                
-                resultados_consolidados.append({
-                    "CUIL/Documento": cuil,
-                    "Apellido y Nombre": nombre,
-                    "Antigüedad Total (Años)": anos_totales,
-                    "Antigüedad Total (Meses)": meses_totales,
-                    "Mejor Cargo Detectado": mejor_cargo_nombre,
-                    "Condición Legal del Cargo": condicion_cumplida,
-                    "Meses Totales en Cargo": meses_computados
-                })
-            
-            df_final = pd.DataFrame(resultados_consolidados)
-            
-            # -----------------------------------------------------------------
-            # 4. EXPOSICIÓN DE RESULTADOS Y DESCARGA
-            # -----------------------------------------------------------------
-            st.subheader("📊 Reporte Previsional Generado")
-            st.dataframe(df_final, use_container_width=True)
-            
-            # Conversión del resultado a un nuevo Excel descargable
+            # Botón de descarga
             @st.cache_data
             def convertir_excel(df):
                 import io
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    df.to_excel(writer, index=False, sheet_name='Consolidado')
+                    df.to_excel(writer, index=False, sheet_name='Resultado_PDF')
                 return output.getvalue()
-            
-            excel_descargable = convertir_excel(df_final)
-            
+                
             st.download_button(
-                label="📥 Descargar Reporte Consolidado en Excel",
-                data=excel_descargable,
-                file_name="Reporte_Consolidado_Previsional.xlsx",
+                label="📥 Descargar Dictamen en Excel",
+                data=convertir_excel(df_reporte),
+                file_name=f"Dictamen_Previsional_{cuil_usuario}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+        else:
+            st.error(f"❌ El cargo '{cargo_buscar}' no pudo ser encontrado textualmente en el PDF cargado. Revise la ortografía en la vista previa.")
